@@ -155,9 +155,34 @@ function tx(store, mode, fn) {
     const t = db.transaction(store, mode);
     const s = t.objectStore(store);
     const req = fn(s);
-    t.oncomplete = () => resolve(req && req.result !== undefined ? req.result : undefined);
+    t.oncomplete = () => {
+      if (mode === 'readwrite' && ['categories', 'groups', 'cards'].indexOf(store) >= 0) backupAll();
+      resolve(req && req.result !== undefined ? req.result : undefined);
+    };
     t.onerror = () => reject(t.error);
   }));
+}
+// iOS 主屏幕 Web App 数据防护：请求持久化存储 + localStorage 自动备份
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {});
+async function backupAll() {
+  try {
+    var all = await Promise.all([dbAll('categories'), dbAll('groups'), dbAll('cards')]);
+    localStorage.setItem('recall_backup', JSON.stringify({ cats: all[0], groups: all[1], cards: all[2] }));
+  } catch (e) {}
+}
+async function restoreBackup() {
+  var raw = localStorage.getItem('recall_backup');
+  if (!raw) return false;
+  try {
+    var data = JSON.parse(raw);
+    var arr = data.cats || [];
+    for (var i = 0; i < arr.length; i++) await dbAdd('categories', arr[i]);
+    arr = data.groups || [];
+    for (var i = 0; i < arr.length; i++) await dbAdd('groups', arr[i]);
+    arr = data.cards || [];
+    for (var i = 0; i < arr.length; i++) await dbAdd('cards', arr[i]);
+    return true;
+  } catch (e) { return false; }
 }
 const dbAll = (store) => tx(store, 'readonly', s => s.getAll());
 const dbGet = (store, id) => tx(store, 'readonly', s => s.get(id));
@@ -167,8 +192,10 @@ const dbDel = (store, id) => tx(store, 'readwrite', s => s.delete(id));
 const dbByIndex = (store, index, val) => tx(store, 'readonly', s => s.index(index).getAll(val));
 
 async function ensureSeed() {
-  const cats = await dbAll('categories');
-  if (cats.length > 0) return;
+  var cats = await dbAll('categories');
+  if (cats.length === 0) await restoreBackup();
+  cats = await dbAll('categories');
+  if (cats.length > 0) { backupAll(); return; }
   const work = await dbAdd('categories', { name: '工作' });
   await dbAdd('categories', { name: '文案' });
   await dbAdd('categories', { name: '其他' });
@@ -176,6 +203,7 @@ async function ensureSeed() {
   await dbAdd('groups', { categoryId: work, name: '对抗说辞' });
   await dbAdd('groups', { categoryId: work, name: '思维整理' });
   await dbAdd('cards', { groupId: g1, question: '示例：如何邀请同事参加周末聚会？', answer: '', practiceCount: 0 });
+  backupAll();
 }
 
 // ---------- counts ----------
